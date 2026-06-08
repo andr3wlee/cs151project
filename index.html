@@ -1,0 +1,830 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mastermind — Epilog Edition</title>
+
+<!--
+  ============================================================================
+  MASTERMIND  (CS151 Logic Programming project)
+  ----------------------------------------------------------------------------
+  The GAME LOGIC is powered entirely by EpilogJS (the Stanford Epilog engine).
+  JavaScript only inserts facts into the dataset and RENDERS the answers that
+  the Epilog rules derive.  No feedback / legality / win condition is decided
+  by a JavaScript "if" — every such question is answered by an Epilog query
+  (exact, present, absent, legalguess, win, terminal, generatedcode), and the
+  guess itself is asserted through an Epilog transition operation (submitguess
+  via comptransform).
+  ============================================================================
+-->
+
+<!-- Stanford Epilog engine.  Kept as a local file so the game runs fully
+     offline (open index.html directly in a browser, no server needed). -->
+<script src="epilog.js"></script>
+
+<style>
+  :root {
+    --paper:      #e7ddc4;
+    --paper-dark: #d8cca8;
+    --wood:       #b0826a;   /* board face            */
+    --wood-cap:   #8d6250;   /* darker rounded caps   */
+    --wood-edge:  #9c6e58;
+    --hole:       #6c4b3b;   /* empty recessed hole   */
+    --groove:     rgba(60,38,26,.18);
+    --peg-exact:  #2c2823;   /* black peg  = right colour + right spot   */
+    --peg-present:#f3ead7;   /* white peg  = right colour, wrong spot    */
+    --ink:        #4a382c;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    min-height: 100%;
+    font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+    color: var(--ink);
+    background:
+      radial-gradient(circle at 20% 15%, rgba(255,255,255,.45), transparent 40%),
+      radial-gradient(circle at 80% 85%, rgba(140,110,70,.18), transparent 45%),
+      var(--paper);
+  }
+
+  /* faint paper grain */
+  body::before {
+    content: "";
+    position: fixed; inset: 0;
+    pointer-events: none;
+    opacity: .5;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
+  }
+
+  .wrap {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 26px 18px 60px;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* ---------------- header / scoreboard ---------------- */
+  header { text-align: center; margin-bottom: 18px; }
+  h1 {
+    margin: 0 0 4px;
+    font-size: clamp(28px, 5vw, 44px);
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: #6b4a36;
+    text-shadow: 0 2px 0 rgba(255,255,255,.35);
+  }
+  .subtitle {
+    margin: 0;
+    font-size: 13px;
+    opacity: .7;
+    letter-spacing: 1px;
+    line-height: 1.55;
+  }
+  .subtitle .line { display: block; }
+
+  .scoreboard {
+    display: flex; justify-content: center; gap: 14px;
+    margin: 16px 0 4px; flex-wrap: wrap;
+  }
+  .score-card {
+    background: #fff7e9;
+    border: 2px solid #c9b48a;
+    border-radius: 14px;
+    padding: 8px 18px;
+    min-width: 130px;
+    text-align: center;
+    box-shadow: 0 3px 0 rgba(150,120,80,.25);
+  }
+  .score-card .label { font-size: 12px; letter-spacing: 1px; text-transform: uppercase; opacity: .7; }
+  .score-card .value { font-size: 30px; font-weight: 700; line-height: 1; margin-top: 2px; }
+  .score-card.you  .value { color: #2f7d4f; }
+  .score-card.cpu  .value { color: #b1432f; }
+
+  .status {
+    text-align: center; min-height: 24px; margin: 12px 0 18px;
+    font-size: 16px; font-weight: 600; letter-spacing: .3px;
+  }
+
+  /* ---------------- the board ---------------- */
+  .board {
+    display: flex; align-items: stretch;
+    border-radius: 38px;
+    background: var(--wood-cap);
+    box-shadow: 0 14px 30px rgba(70,45,30,.35), inset 0 2px 6px rgba(255,255,255,.15);
+    overflow: hidden;
+    margin: 0 auto;
+  }
+  .cap { width: 58px; flex: 0 0 58px; background: linear-gradient(180deg, #98694f, #7e5743); }
+
+  .face {
+    flex: 1;
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    padding: 22px 14px;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.10), rgba(0,0,0,.05)),
+      var(--wood);
+  }
+
+  /* reveal + give-up panel (left) */
+  .reveal-panel {
+    flex: 0 0 auto;
+    display: flex; flex-direction: column; align-items: center;
+    gap: 14px;
+    padding: 0 16px 0 6px;
+    border-right: 2px solid var(--groove);
+    margin-right: 8px;
+  }
+  .reveal-slots { display: flex; flex-direction: column; gap: 14px; }
+
+  .giveup {
+    margin-top: auto;
+    width: 44px; height: 44px;
+    border: none; border-radius: 10px;
+    background: linear-gradient(180deg, #835a47, #6f4a39);
+    box-shadow: inset 0 2px 4px rgba(255,255,255,.18), 0 3px 6px rgba(0,0,0,.3);
+    cursor: pointer;
+    position: relative;
+    transition: transform .12s ease, filter .12s ease;
+  }
+  .giveup:hover { filter: brightness(1.12); transform: translateY(-1px); }
+  .giveup::after {           /* little flag/icon */
+    content: "⚑";
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: #f0d9b5; font-size: 20px;
+  }
+  .giveup .tip {
+    position: absolute;
+    left: 54px; top: 50%; transform: translateY(-50%) scale(.96);
+    width: 220px;
+    background: #2f241c; color: #f4e7d2;
+    font-size: 12.5px; font-weight: 500; line-height: 1.4;
+    padding: 10px 12px; border-radius: 10px;
+    opacity: 0; pointer-events: none;
+    transition: opacity .15s ease, transform .15s ease;
+    box-shadow: 0 6px 16px rgba(0,0,0,.35);
+    z-index: 40;
+  }
+  .giveup .tip::before {
+    content: ""; position: absolute; left: -6px; top: 50%;
+    transform: translateY(-50%);
+    border: 6px solid transparent; border-right-color: #2f241c;
+  }
+  .giveup:hover .tip { opacity: 1; transform: translateY(-50%) scale(1); }
+
+  /* guess columns container — round 1 sits on the RIGHT (matches design) */
+  .guesses { flex: 1; display: flex; align-items: stretch; }
+
+  .col {
+    flex: 1;
+    display: flex; flex-direction: column; align-items: center;
+    gap: 12px;
+    padding: 0 6px 4px;
+    border-left: 1px solid var(--groove);
+    position: relative;
+    transition: background .2s ease;
+    border-radius: 10px;
+  }
+  .col.active {
+    background: linear-gradient(180deg, rgba(255,247,225,.30), rgba(255,247,225,.05));
+    box-shadow: inset 0 0 0 2px rgba(255,243,210,.45);
+  }
+  .col.done { opacity: .96; }
+
+  .slots { display: flex; flex-direction: column; gap: 13px; padding-top: 4px; }
+
+  .hole {
+    width: 32px; height: 32px; border-radius: 50%;
+    background: var(--hole);
+    box-shadow: inset 0 3px 5px rgba(0,0,0,.5), inset 0 -2px 3px rgba(255,255,255,.06);
+  }
+  .col.active .slot.empty:hover .hole {
+    box-shadow: inset 0 3px 5px rgba(0,0,0,.5), 0 0 0 3px rgba(255,243,210,.7);
+    cursor: pointer;
+  }
+  .slot {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 6px;
+    margin: -6px;
+    border-radius: 50%;
+    touch-action: manipulation;
+  }
+  .col.active .slot { cursor: pointer; }
+  .col.active .slot.selected {
+    box-shadow: 0 0 0 3px #ffd76b;
+  }
+  .slot.selected .hole {
+    box-shadow: inset 0 3px 5px rgba(0,0,0,.5), 0 0 0 3px #ffd76b;
+  }
+
+  /* a coloured peg/ball */
+  .ball {
+    width: 32px; height: 32px; border-radius: 50%;
+    background: var(--c, #888);
+    box-shadow:
+      inset -3px -4px 6px rgba(0,0,0,.30),
+      inset 3px 3px 6px rgba(255,255,255,.40),
+      0 1px 2px rgba(0,0,0,.25);
+  }
+
+  /* feedback pegs: 2x2 read clockwise from top-right (pos1,2,3,4) */
+  .pegs {
+    display: grid;
+    grid-template-columns: repeat(2, 14px);
+    grid-template-rows: repeat(2, 14px);
+    gap: 5px;
+    margin-top: 6px;
+    padding: 6px; border-radius: 8px;
+    background: rgba(60,38,26,.22);
+  }
+  .peg {
+    width: 14px; height: 14px; border-radius: 50%;
+    background: rgba(0,0,0,.32);
+    box-shadow: inset 0 1px 2px rgba(0,0,0,.5);
+  }
+  .peg.exact   { background: var(--peg-exact);   box-shadow: inset 0 1px 2px rgba(255,255,255,.15), 0 0 3px rgba(0,0,0,.4); }
+  .peg.present { background: var(--peg-present); box-shadow: inset 0 1px 2px rgba(0,0,0,.18), 0 0 0 1px rgba(120,90,60,.4); }
+
+  /* ---------------- colour tray (always below board — never blocks slots) ---- */
+  .color-tray-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    margin-top: 18px;
+    min-height: 72px;
+  }
+  .color-tray-wrap.hidden { visibility: hidden; pointer-events: none; }
+  .color-tray-label {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: .3px;
+    color: #5a4636;
+    text-align: center;
+  }
+  .color-tray {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: center;
+    max-width: 360px;
+    background: #2f241c;
+    padding: 14px 18px;
+    border-radius: 16px;
+    box-shadow: 0 8px 22px rgba(0,0,0,.28);
+  }
+  .color-tray .ball {
+    cursor: pointer;
+    transition: transform .1s ease, box-shadow .1s ease;
+  }
+  .color-tray .ball:hover:not(.disabled) { transform: scale(1.14); }
+  .color-tray .ball.disabled {
+    opacity: .28;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+
+  /* ---------------- controls ---------------- */
+  .controls {
+    display: flex; justify-content: center; gap: 14px;
+    margin-top: 24px; flex-wrap: wrap;
+  }
+  button.action {
+    font: inherit; font-weight: 700; letter-spacing: .5px;
+    padding: 12px 26px; border-radius: 12px; border: none; cursor: pointer;
+    box-shadow: 0 4px 0 rgba(0,0,0,.2); transition: transform .1s ease, filter .1s ease;
+  }
+  button.action:hover:not(:disabled) { filter: brightness(1.07); transform: translateY(-1px); }
+  button.action:active:not(:disabled){ transform: translateY(2px); box-shadow: 0 2px 0 rgba(0,0,0,.2); }
+  button.action:disabled { opacity: .45; cursor: not-allowed; }
+  .btn-submit { background: #4f9d6a; color: #fff; }
+  .btn-new    { background: #c98a3e; color: #fff; }
+
+  .legend {
+    display: flex; justify-content: center; gap: 22px; flex-wrap: wrap;
+    margin-top: 22px; font-size: 13px; color: #5a4636;
+  }
+  .legend .item { display: flex; align-items: center; gap: 7px; }
+  .legend .dot { width: 15px; height: 15px; border-radius: 50%; }
+  .legend .dot.exact   { background: var(--peg-exact); }
+  .legend .dot.present { background: var(--peg-present); border: 1px solid #b29a78; }
+  .legend .dot.absent  { background: rgba(0,0,0,.3); }
+
+  /* ---------------- end-game banner ---------------- */
+  .overlay {
+    position: fixed; inset: 0; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(40,28,20,.55); z-index: 80;
+  }
+  .overlay.show { display: flex; }
+  .modal {
+    background: #fbf3e2; border: 3px solid #c9b48a; border-radius: 20px;
+    padding: 30px 34px; text-align: center; max-width: 380px;
+    box-shadow: 0 16px 40px rgba(0,0,0,.4);
+    animation: pop .25s ease;
+  }
+  @keyframes pop { from { transform: scale(.85); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+  .modal h2 { margin: 0 0 8px; font-size: 28px; }
+  .modal.win  h2 { color: #2f7d4f; }
+  .modal.lose h2 { color: #b1432f; }
+  .modal p { margin: 6px 0 16px; font-size: 15px; }
+  .modal .code-row { display: flex; justify-content: center; gap: 10px; margin: 14px 0 20px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Mastermind</h1>
+    <p class="subtitle">
+      <span class="line">Stanford University</span>
+      <span class="line">Andrew Lee</span>
+      <span class="line">CS151</span>
+      <span class="line">powered by Epilog</span>
+    </p>
+    <div class="scoreboard">
+      <div class="score-card cpu"><div class="label">Computer</div><div class="value" id="scoreCpu">0</div></div>
+      <div class="score-card you"><div class="label">You</div><div class="value" id="scoreYou">0</div></div>
+    </div>
+  </header>
+
+  <div class="status" id="status">Loading the Epilog engine…</div>
+
+  <div class="board" id="board">
+    <div class="cap"></div>
+    <div class="face">
+      <div class="reveal-panel">
+        <div class="reveal-slots" id="revealSlots"></div>
+        <button class="giveup" id="giveupBtn" aria-label="Give up and reveal the code">
+          <span class="tip">Do you give up? Revealing the code will make you give up, and the computer will win.</span>
+        </button>
+      </div>
+      <div class="guesses" id="guesses"></div>
+    </div>
+    <div class="cap"></div>
+  </div>
+
+  <div class="color-tray-wrap" id="colorTrayWrap">
+    <div class="color-tray-label" id="colorTrayLabel">Click a slot above, then pick a colour</div>
+    <div class="color-tray" id="colorTray" aria-label="Colour choices"></div>
+  </div>
+
+  <div class="controls">
+    <button class="action btn-submit" id="submitBtn" disabled>Submit Guess</button>
+    <button class="action btn-new" id="newBtn">New Game</button>
+  </div>
+
+  <div class="legend">
+    <div class="item"><span class="dot exact"></span> right colour &amp; right spot (exact)</div>
+    <div class="item"><span class="dot present"></span> right colour, wrong spot (present)</div>
+    <div class="item"><span class="dot absent"></span> not in the code (absent)</div>
+  </div>
+</div>
+
+<div class="overlay" id="overlay">
+  <div class="modal" id="modal">
+    <h2 id="modalTitle"></h2>
+    <p id="modalMsg"></p>
+    <div class="code-row" id="modalCode"></div>
+    <button class="action btn-new" id="modalNew">Play Again</button>
+  </div>
+</div>
+
+<script>
+/* ============================================================================
+   1.  EPILOG KNOWLEDGE  (the source of truth for the whole game)
+   ============================================================================ */
+
+// Eight guessable colours.  (We deliberately use 8 vivid colours and keep the
+// classic black/white discs ONLY for feedback pegs, so guesses never collide
+// with the peg colours.)
+const COLORS = [
+  { name: 'red',    hex: '#d94f4f' },
+  { name: 'orange', hex: '#e89a3c' },
+  { name: 'yellow', hex: '#f0cf4a' },
+  { name: 'green',  hex: '#7fbf6a' },
+  { name: 'cyan',   hex: '#5fc6df' },
+  { name: 'blue',   hex: '#4566bf' },
+  { name: 'purple', hex: '#9b6fc6' },
+  { name: 'pink',   hex: '#d8568f' },
+];
+const HEX = Object.fromEntries(COLORS.map(c => [c.name, c.hex]));
+
+const ROUNDS = 10;
+const POSITIONS = 4;
+
+// Static facts: domains (colours, positions, rounds, round ordering).
+const BASE_FACTS = `
+color(red) color(orange) color(yellow) color(green)
+color(cyan) color(blue) color(purple) color(pink)
+
+position(1) position(2) position(3) position(4)
+
+round(r1) round(r2) round(r3) round(r4) round(r5)
+round(r6) round(r7) round(r8) round(r9) round(r10)
+
+nextround(r1,r2) nextround(r2,r3) nextround(r3,r4) nextround(r4,r5)
+nextround(r5,r6) nextround(r6,r7) nextround(r7,r8) nextround(r8,r9)
+nextround(r9,r10)
+`;
+
+// Derived relations: this is the declarative heart of the project.
+const RULES = `
+% ---- helpers -------------------------------------------------------------
+otherposition(P,Q) :- position(P) & position(Q) & distinct(P,Q)
+secrethas(C)       :- secret(P,C)
+
+% ---- legal-code generator (domain + distinctness, pruned early) ----------
+generatedcode(C1,C2,C3,C4) :-
+  color(C1) &
+  color(C2) & distinct(C1,C2) &
+  color(C3) & distinct(C1,C3) & distinct(C2,C3) &
+  color(C4) & distinct(C1,C4) & distinct(C2,C4) & distinct(C3,C4)
+
+% ---- ORDERED, per-slot feedback -----------------------------------------
+% exact: right colour in the right slot.
+exact(R,P)   :- guess(R,P,C) & secret(P,C)
+% present: the colour is in the code, but at a DIFFERENT slot.
+present(R,P) :- guess(R,P,C) & secret(Q,C) & distinct(P,Q) & ~exact(R,P)
+% absent: the colour appears nowhere in the secret code.
+absent(R,P)  :- guess(R,P,C) & ~secrethas(C)
+
+% ---- legality (domain + distinctness checks come first to prune) ---------
+filled(R,P)  :- guess(R,P,C)
+complete(R)  :- filled(R,1) & filled(R,2) & filled(R,3) & filled(R,4)
+
+legalguess(R) :- guess(R,1,C1) & color(C1) &
+                 guess(R,2,C2) & color(C2) & distinct(C1,C2) &
+                 guess(R,3,C3) & color(C3) & distinct(C1,C3) & distinct(C2,C3) &
+                 guess(R,4,C4) & color(C4) & distinct(C1,C4) & distinct(C2,C4) & distinct(C3,C4)
+
+% ---- constraints (illegal states, Ch.15 style) ---------------------------
+illegalguess(R) :- guess(R,P,C) & ~color(C)
+illegalguess(R) :- guess(R,P,C1) & guess(R,Q,C2) & distinct(P,Q) & same(C1,C2)
+illegalguess(R) :- guess(R,P,C) & ~complete(R)
+
+% ---- game status ---------------------------------------------------------
+allexact(R) :- exact(R,1) & exact(R,2) & exact(R,3) & exact(R,4)
+win(R)      :- allexact(R)
+lastround(r10)
+terminal(R) :- win(R)
+terminal(R) :- lastround(R)
+`;
+
+// EpilogJS theories (plain arrays the engine indexes into).
+let data  = [];   // facts: domains + secret + guesses
+let rules = [];   // the rules above
+
+/* ============================================================================
+   2.  GAME STATE
+   ============================================================================ */
+let secret = [];          // ['red','blue',...] (length 4) — chosen by Epilog
+let currentRound = 1;     // 1..10, round 1 is the right-most column
+let draft = [];           // colours the player is assembling for currentRound
+let selectedSlot = null;  // which slot (0–3) is selected for the colour tray
+let gameOver = false;
+let score = { cpu: 0, you: 0 };
+
+/* ============================================================================
+   3.  EPILOG-DRIVEN OPERATIONS  (no JS decides game outcomes)
+   ============================================================================ */
+
+// Reset the dataset and let Epilog GENERATE a fresh legal secret code.
+function newSecretFromEpilog() {
+  definefacts(data, readdata(BASE_FACTS));          // clears secret + guesses
+  const codes = compfinds(read('generatedcode(A,B,C,D)'),
+                          read('generatedcode(A,B,C,D)'), data, rules);
+  const pick = codes[Math.floor(Math.random() * codes.length)];
+  secret = [pick[1], pick[2], pick[3], pick[4]];
+  definemorefacts(data, readdata(
+    `secret(1,${secret[0]}) secret(2,${secret[1]}) secret(3,${secret[2]}) secret(4,${secret[3]})`));
+}
+
+// The Epilog "submitguess" OPERATION: stage the chosen colours as `pending`
+// facts, then run a transition that asserts guess(R,P,C) into the dataset.
+function submitguessOperation(round, colors) {
+  const rid = 'r' + round;
+  definemorefacts(data, readdata(
+    `pending(1,${colors[0]}) pending(2,${colors[1]}) ` +
+    `pending(3,${colors[2]}) pending(4,${colors[3]}) currentround(${rid})`));
+  // transition: for every pending(P,C) in the current round, assert guess(R,P,C)
+  comptransform(read('pending(P,C) & currentround(R)'), read('guess(R,P,C)'), data, rules);
+  // tidy up the scratch facts so only guess(...) remains
+  for (let p = 1; p <= 4; p++) dropfact(read(`pending(${p},${colors[p-1]})`), data);
+  dropfact(read(`currentround(${rid})`), data);
+}
+
+// Ask Epilog for the per-slot feedback of a round (returns 4 status strings).
+function feedbackFromEpilog(round) {
+  const rid = 'r' + round, fb = [];
+  for (let p = 1; p <= 4; p++) {
+    if (compfindp(read(`exact(${rid},${p})`),   data, rules)) fb.push('exact');
+    else if (compfindp(read(`present(${rid},${p})`), data, rules)) fb.push('present');
+    else fb.push('absent');
+  }
+  return fb;
+}
+const isLegalGuess = round => compfindp(read(`legalguess(r${round})`), data, rules);
+const isWin        = round => compfindp(read(`win(r${round})`),        data, rules);
+const isTerminal   = round => compfindp(read(`terminal(r${round})`),   data, rules);
+
+/* ============================================================================
+   4.  RENDERING
+   ============================================================================ */
+const $ = id => document.getElementById(id);
+
+function ball(colorName) {
+  const b = document.createElement('div');
+  b.className = 'ball';
+  b.style.setProperty('--c', HEX[colorName]);
+  return b;
+}
+
+function buildBoard() {
+  // reveal panel holes (hidden code) start empty
+  const rev = $('revealSlots'); rev.innerHTML = '';
+  for (let p = 0; p < POSITIONS; p++) {
+    const h = document.createElement('div'); h.className = 'hole';
+    h.id = 'reveal-' + p; rev.appendChild(h);
+  }
+
+  const cont = $('guesses'); cont.innerHTML = '';
+  // append rounds 10 -> 1 so that round 1 ends up on the RIGHT (per design)
+  for (let r = ROUNDS; r >= 1; r--) {
+    const col = document.createElement('div');
+    col.className = 'col'; col.id = 'col-' + r;
+
+    const slots = document.createElement('div'); slots.className = 'slots';
+    for (let p = 0; p < POSITIONS; p++) {
+      const slot = document.createElement('div');
+      slot.className = 'slot empty';
+      slot.id = `slot-${r}-${p}`;
+      slot.appendChild(holeEl());
+      slot.addEventListener('click', e => { e.stopPropagation(); onSlotClick(r, p); });
+      slots.appendChild(slot);
+    }
+    col.appendChild(slots);
+
+    const pegs = document.createElement('div'); pegs.className = 'pegs';
+    pegs.id = 'pegs-' + r;
+    for (let i = 0; i < 4; i++) {
+      const pg = document.createElement('div'); pg.className = 'peg'; pegs.appendChild(pg);
+    }
+    col.appendChild(pegs);
+
+    cont.appendChild(col);
+  }
+}
+function holeEl() { const h = document.createElement('div'); h.className = 'hole'; return h; }
+
+// paint a single slot with either an empty hole or a coloured ball
+function paintSlot(round, pos) {
+  const slot = $(`slot-${round}-${pos}`);
+  slot.innerHTML = '';
+  const c = draft[pos];
+  if (c) { slot.classList.remove('empty'); slot.appendChild(ball(c)); }
+  else   { slot.classList.add('empty');    slot.appendChild(holeEl()); }
+  slot.classList.toggle('selected', selectedSlot === pos && round === currentRound && !gameOver);
+}
+
+// paint a finished round's slots (from asserted guesses) — used after submit
+function paintGuess(round, colors) {
+  for (let p = 0; p < POSITIONS; p++) {
+    const slot = $(`slot-${round}-${p}`);
+    slot.innerHTML = ''; slot.classList.remove('empty', 'selected');
+    slot.appendChild(ball(colors[p]));
+  }
+}
+
+// pegs are read clockwise from top-right: pos1=TR, pos2=BR, pos3=BL, pos4=TL.
+// grid DOM order is TL,TR,BL,BR -> map [pos4,pos1,pos3,pos2].
+function paintPegs(round, fb) {
+  const cells = $('pegs-' + round).children;
+  const order = [fb[3], fb[0], fb[2], fb[1]];
+  for (let i = 0; i < 4; i++) {
+    cells[i].className = 'peg' + (order[i] === 'exact' ? ' exact'
+                              : order[i] === 'present' ? ' present' : '');
+  }
+}
+
+function setActiveColumn() {
+  document.querySelectorAll('.col').forEach(c => c.classList.remove('active'));
+  if (!gameOver && currentRound <= ROUNDS) $('col-' + currentRound).classList.add('active');
+  renderColorTray();
+}
+
+function revealCode() {
+  for (let p = 0; p < POSITIONS; p++) {
+    const h = $('reveal-' + p);
+    h.className = 'ball'; h.style.setProperty('--c', HEX[secret[p]]);
+  }
+}
+
+function renderScore() {
+  $('scoreCpu').textContent = score.cpu;
+  $('scoreYou').textContent = score.you;
+}
+
+/* ============================================================================
+   5.  INTERACTION
+   ============================================================================ */
+function firstEmptySlot() {
+  for (let p = 0; p < POSITIONS; p++) if (!draft[p]) return p;
+  return null;
+}
+
+function colorsAvailableForSlot(pos) {
+  const used = draft.filter((c, i) => c && i !== pos);
+  return COLORS.filter(c => !used.includes(c.name));
+}
+
+function renderColorTray() {
+  const wrap = $('colorTrayWrap');
+  const tray = $('colorTray');
+  const label = $('colorTrayLabel');
+  tray.innerHTML = '';
+
+  if (gameOver || currentRound > ROUNDS) {
+    wrap.classList.add('hidden');
+    return;
+  }
+  wrap.classList.remove('hidden');
+
+  const pos = selectedSlot;
+  if (pos !== null) {
+    label.textContent = `Slot ${pos + 1} selected — pick a colour (or click another slot)`;
+  } else {
+    label.textContent = 'Click any slot in the highlighted column, then pick a colour';
+  }
+
+  const available = pos !== null
+    ? colorsAvailableForSlot(pos)
+    : COLORS;
+  const availableNames = new Set(available.map(c => c.name));
+
+  COLORS.forEach(c => {
+    const b = ball(c.name);
+    b.title = c.name;
+    const enabled = availableNames.has(c.name);
+    if (!enabled) b.classList.add('disabled');
+    b.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!enabled || gameOver) return;
+      let target = selectedSlot;
+      if (target === null) target = firstEmptySlot();
+      if (target === null) return;
+      chooseColor(target, c.name);
+    });
+    tray.appendChild(b);
+  });
+}
+
+function onSlotClick(round, pos) {
+  if (gameOver || round !== currentRound) return;
+  selectedSlot = pos;
+  for (let p = 0; p < POSITIONS; p++) paintSlot(round, p);
+  renderColorTray();
+}
+
+function chooseColor(pos, colorName) {
+  if (gameOver || !colorsAvailableForSlot(pos).some(c => c.name === colorName)) return;
+  draft[pos] = colorName;
+  selectedSlot = pos;
+  for (let p = 0; p < POSITIONS; p++) paintSlot(currentRound, p);
+  $('submitBtn').disabled = draft.filter(Boolean).length !== POSITIONS;
+  renderColorTray();
+}
+
+/* ---- submit a completed guess ---- */
+function onSubmit() {
+  if (gameOver) return;
+  const colors = draft.slice();
+  if (colors.filter(Boolean).length !== POSITIONS) return;
+
+  submitguessOperation(currentRound, colors);    // Epilog asserts the guess
+
+  if (!isLegalGuess(currentRound)) {              // Epilog validates legality
+    setStatus('That guess is not legal (Epilog rejected it).');
+    return;
+  }
+
+  paintGuess(currentRound, colors);
+  const fb = feedbackFromEpilog(currentRound);    // Epilog derives feedback
+  paintPegs(currentRound, fb);
+  $('col-' + currentRound).classList.add('done');
+
+  if (isWin(currentRound)) { endGame(true); return; }
+  if (currentRound >= ROUNDS && isTerminal(currentRound)) { endGame(false); return; }
+
+  // advance to the next round (column to the left)
+  currentRound++;
+  draft = [];
+  selectedSlot = null;
+  $('submitBtn').disabled = true;
+  setActiveColumn();
+  for (let p = 0; p < POSITIONS; p++) paintSlot(currentRound, p);
+  setStatus(`Round ${currentRound} of ${ROUNDS} — pick 4 different colours.`);
+}
+
+function giveUp() {
+  if (gameOver) return;
+  endGame(false, true);
+}
+
+/* ============================================================================
+   6.  END GAME
+   ============================================================================ */
+function endGame(playerWon, gaveUp = false) {
+  gameOver = true;
+  renderColorTray();
+  revealCode();
+  setActiveColumn();
+  $('submitBtn').disabled = true;
+
+  if (playerWon) { score.you++; }
+  else           { score.cpu++; }
+  saveScore(); renderScore();
+
+  const modal = $('modal');
+  modal.className = 'modal ' + (playerWon ? 'win' : 'lose');
+  if (playerWon) {
+    $('modalTitle').textContent = 'You cracked it! 🎉';
+    $('modalMsg').textContent = `You won in ${currentRound} ${currentRound === 1 ? 'try' : 'tries'}. The secret code was:`;
+    setStatus('You win! 🎉');
+  } else if (gaveUp) {
+    $('modalTitle').textContent = 'You gave up';
+    $('modalMsg').textContent = 'The computer wins this round. The code was:';
+    setStatus('You gave up — the computer wins.');
+  } else {
+    $('modalTitle').textContent = 'Out of guesses!';
+    $('modalMsg').textContent = 'The computer wins. The code was:';
+    setStatus('You lost — the computer wins.');
+  }
+
+  const row = $('modalCode'); row.innerHTML = '';
+  secret.forEach(c => row.appendChild(ball(c)));
+  $('overlay').classList.add('show');
+}
+
+/* ============================================================================
+   7.  NEW GAME + SCORE PERSISTENCE
+   ============================================================================ */
+function newGame() {
+  gameOver = false;
+  currentRound = 1;
+  draft = [];
+  selectedSlot = null;
+  $('overlay').classList.remove('show');
+  $('submitBtn').disabled = true;
+
+  newSecretFromEpilog();   // Epilog generates the hidden code
+  buildBoard();
+  for (let p = 0; p < POSITIONS; p++) paintSlot(currentRound, p);
+  setActiveColumn();
+  setStatus(`Round 1 of ${ROUNDS} — click a slot, then pick a colour.`);
+}
+
+function setStatus(msg) { $('status').textContent = msg; }
+
+function loadScore() {
+  try {
+    const s = JSON.parse(localStorage.getItem('mastermind_score'));
+    if (s && typeof s.cpu === 'number' && typeof s.you === 'number') score = s;
+  } catch (_) {}
+}
+function saveScore() {
+  try { localStorage.setItem('mastermind_score', JSON.stringify(score)); } catch (_) {}
+}
+
+/* ============================================================================
+   8.  BOOT
+   ============================================================================ */
+window.addEventListener('DOMContentLoaded', () => {
+  if (typeof compfinds !== 'function') {
+    setStatus('Could not load the Epilog engine (epilog.js). Keep it next to index.html.');
+    return;
+  }
+  definerules(rules, readdata(RULES));
+  loadScore(); renderScore();
+
+  $('submitBtn').addEventListener('click', onSubmit);
+  $('newBtn').addEventListener('click', newGame);
+  $('modalNew').addEventListener('click', newGame);
+  $('giveupBtn').addEventListener('click', giveUp);
+
+  newGame();
+});
+</script>
+</body>
+</html>
